@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>VoxelCraft</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #9fd0ff; user-select: none; cursor: default;
+    font-family: "Segoe UI", "Microsoft YaHei", monospace;
+  }
+  canvas { display: block; }
+  #game { position: fixed; inset: 0; }
+
+  /* 准星 */
+  #crosshair {
+    position: fixed; left: 50%; top: 50%; width: 20px; height: 20px;
+    transform: translate(-50%, -50%); pointer-events: none; z-index: 20;
+    opacity: .8; mix-blend-mode: difference;
+  }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; }
+  #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; }
+  #crosshair::after { top: 50%; left: 0; height: 2px; width: 100%; margin-top: -1px; }
+
+  /* 调试信息 */
+  #debug {
+    position: fixed; left: 8px; top: 8px; z-index: 20; color: #fff;
+    font: 12px/1.65 Consolas, monospace; text-shadow: 1px 1px 0 #000;
+    pointer-events: none; white-space: pre;
+  }
+
+  /* 快捷栏 */
+  #hotbar {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    display: flex; gap: 3px; padding: 3px; z-index: 20;
+    background: rgba(0,0,0,.42); border: 2px solid rgba(255,255,255,.28);
+    border-radius: 3px; pointer-events: none;
+  }
+  .slot {
+    width: 44px; height: 44px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06);
+  }
+  .slot .icon { width: 30px; height: 30px; image-rendering: pixelated; }
+  .slot .num {
+    position: absolute; right: 2px; bottom: 0; color: #fff; font-size: 10px;
+    text-shadow: 1px 1px 0 #000;
+  }
+  .slot.on { border-color: #fff; background: rgba(255,255,255,.22); }
+  .slot.on::after {
+    content: ""; position: absolute; inset: -6px -6px auto -6px; height: 3px;
+    background: #fff;
+  }
+
+  /* 生命 / 氧气 */
+  #stats {
+    position: fixed; left: 50%; bottom: 68px; transform: translateX(-50%);
+    display: flex; gap: 14px; z-index: 20; pointer-events: none;
+  }
+  .bars { display: flex; gap: 2px; }
+  .pip { width: 16px; height: 16px; image-rendering: pixelated; opacity: .95; }
+
+  /* 破坏进度覆盖层 */
+  #crack {
+    position: fixed; left: 50%; top: 50%; width: 64px; height: 64px;
+    transform: translate(-50%, -50%); z-index: 19; pointer-events: none;
+    image-rendering: pixelated; opacity: .75; display: none;
+  }
+
+  /* 开始 / 暂停遮罩 */
+  #overlay {
+    position: fixed; inset: 0; z-index: 40; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    background:
+      radial-gradient(circle at 50% 40%, rgba(30,60,100,.55), rgba(8,16,28,.88)),
+      rgba(8,16,28,.55);
+    color: #fff; text-align: center; cursor: pointer;
+    backdrop-filter: blur(3px);
+  }
+  #overlay.hide { display: none; }
+  #overlay h1 {
+    font-size: 52px; letter-spacing: 8px; font-weight: 700;
+    text-shadow: 4px 4px 0 #1d3a1d, 0 0 30px rgba(120,255,120,.5);
+    margin-bottom: 4px;
+  }
+  #overlay .sub { color: #b8dcff; letter-spacing: 4px; font-size: 12px; margin-bottom: 26px; }
+  #overlay .keys { font: 13px/2.1 Consolas, monospace; color: #dbe8f5; margin-bottom: 8px; }
+  #overlay kbd {
+    background: #1e2c3c; border: 1px solid #4a627c; border-bottom-width: 3px;
+    border-radius: 4px; padding: 1px 7px; margin: 0 2px;
+    font-family: inherit; font-size: 12px;
+  }
+  #overlay .go {
+    margin-top: 20px; padding: 11px 34px; border: 2px solid #fff; border-radius: 3px;
+    font-size: 16px; letter-spacing: 4px; background: rgba(255,255,255,.06);
+  }
+  #overlay .loading { color: #ffd479; font-size: 13px; margin-top: 14px; height: 18px; }
+
+  /* 物品栏 / 合成面板 */
+  #inventory {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55);
+  }
+  #inventory.show { display: flex; }
+  #inv-panel {
+    background: #c6c6c6; border: 4px solid #555; border-radius: 2px;
+    padding: 14px; box-shadow: 0 8px 40px rgba(0,0,0,.6);
+  }
+  #inv-panel h2 { font: 13px/1 Consolas, monospace; color: #333; margin-bottom: 10px; }
+  .inv-row { display: flex; gap: 3px; margin-bottom: 8px; }
+  .inv-grid { display: grid; grid-template-columns: repeat(9, 42px); gap: 3px; }
+</style>
+</head>
+<body>
+
+<div id="game"></div>
+<div id="crosshair"></div>
+<div id="debug"></div>
+<div id="crack"></div>
+
+<div id="stats">
+  <div class="bars" id="health"></div>
+  <div class="bars" id="air"></div>
+</div>
+
+<div id="hotbar"></div>
+
+<div id="inventory">
+  <div id="inv-panel">
+    <h2>物品栏</h2>
+    <div class="inv-grid" id="inv-grid"></div>
+  </div>
+</div>
+
+<div id="overlay">
+  <h1>VoxelCraft</h1>
+  <div class="sub">A VOXEL SANDBOX</div>
+  <div class="keys">
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动 &nbsp;·&nbsp; <kbd>空格</kbd> 跳跃 / 游泳
+    &nbsp;·&nbsp; <kbd>Shift</kbd> 潜行 / 加速<br>
+    <kbd>左键</kbd> 挖掘 &nbsp;·&nbsp; <kbd>右键</kbd> 放置 &nbsp;·&nbsp; <kbd>中键</kbd> 取方块<br>
+    <kbd>1</kbd>–<kbd>9</kbd> / 滚轮 选方块 &nbsp;·&nbsp; <kbd>E</kbd> 物品栏
+    &nbsp;·&nbsp; <kbd>F</kbd> 飞行 &nbsp;·&nbsp; <kbd>F11</kbd> 全屏<br>
+    <kbd>ESC</kbd> 释放鼠标 / 暂停
+  </div>
+  <div class="go" id="go-text">点击开始游戏</div>
+  <div class="loading" id="loading-text"></div>
+</div>
+
+<!-- 本地化的 three.js：exe 运行时不允许联网 -->
+<script src="lib/three.min.js"></script>
+
+<!-- 模块按依赖顺序加载。每个文件只挂一个全局，互不引用对方内部实现。 -->
+<script src="textures.js"></script>       <!-- VoxelTextures  — 程序化贴图，无依赖 -->
+<script src="voxel-blocks.js"></script>   <!-- VoxelBlocks    — 方块注册表，其余模块都读它 -->
+<script src="voxel-worldgen.js"></script> <!-- VoxelWorldgen  — 地形生成 -->
+<script src="voxel-light.js"></script>    <!-- VoxelLight     — 光照传播 -->
+<script src="voxel-chunk.js"></script>    <!-- VoxelChunk     — 区块存储 + 网格构建 -->
+<script src="voxel-raycast.js"></script>  <!-- VoxelRaycast   — 射线拾取 + 挖掘/放置规则 -->
+<script src="voxel-player.js"></script>   <!-- VoxelPlayer    — 玩家物理 -->
+<script src="voxel-inventory.js"></script><!-- VoxelInventory — 背包 + 合成 -->
+<script src="voxel-mobs.js"></script>     <!-- VoxelMobs      — 生物 -->
+<script src="voxel-sound.js"></script>    <!-- VoxelSound     — WebAudio 合成音效 -->
+<script src="voxel-save.js"></script>     <!-- VoxelSave      — 存档 -->
+
+<!-- 粘合层：建场景、装配上面所有模块、主循环、UI。必须最后加载。 -->
+<script src="engine.js"></script>
+
+</body>
+</html>

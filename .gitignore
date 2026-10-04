@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+*.tmp
+
+# 本地调试产物
+.capture.js
+.capture.png
+.render.png
+.shot.html
