@@ -7,8 +7,9 @@
 
   const CHUNK_X = 16, CHUNK_Z = 16, CHUNK_Y = 128, SEA_LEVEL = 56;
 
-  const BLK = global.VoxelBlocks || { isOpaque: () => true, ID: { GLOWSTONE: 27 } };
+  const BLK = global.VoxelBlocks || { isOpaque: () => true, ID: { GLOWSTONE: 27, WATER: 15 } };
   const GLOWSTONE = BLK.ID.GLOWSTONE;
+  const WATER = BLK.ID.WATER;
 
   /* ============================================================
    * 计算区块的天光和矿物光
@@ -31,7 +32,7 @@
           // 如果是不透明方块，光照衰减；水衰减 1，其他完全阻挡
           if (BLK.isOpaque(id)) {
             light = 0;
-          } else if (id === 15) {  // WATER
+          } else if (id === WATER) {
             if (light > 0) light--;
           }
         }
@@ -53,14 +54,16 @@
       }
     }
 
-    // BFS 扩散
-    while (queue.length) {
-      const [lx, y, lz, light] = queue.shift();
+    // BFS 扩散。用游标遍历而不是 Array.shift()：shift 是 O(n)，
+    // 会让整个 BFS 退化成 O(n²)。邻居方向表提到循环外，避免每节点重建。
+    const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    for (let head = 0; head < queue.length; head++) {
+      const node = queue[head];
+      const lx = node[0], y = node[1], lz = node[2], light = node[3];
       if (light <= 0) continue;
 
-      // 六个邻居
-      const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-      for (const [dx, dy, dz] of dirs) {
+      for (let d = 0; d < dirs.length; d++) {
+        const dx = dirs[d][0], dy = dirs[d][1], dz = dirs[d][2];
         const nlx = lx + dx, ny = y + dy, nlz = lz + dz;
         if (nlx < 0 || nlx >= CHUNK_X || ny < 0 || ny >= CHUNK_Y || nlz < 0 || nlz >= CHUNK_Z) continue;
 
@@ -80,11 +83,19 @@
    * 增量更新：方块改动时的局部光照调整
    * ============================================================ */
   function onBlockChanged(x, y, z, oldId, newId, world) {
-    // 这个版本的简化实现：仅标记相关区块为光照脏
-    // 完整的增量 BFS 删除+添加会很复杂，这里先用暴力方案：
-    // 标记该方块所在的区块和邻近区块需要重新光照计算
+    // 真正重算受影响区块的光照。
+    // 之前这里只 markDirty：那只让网格重建，网格读到的仍是旧的光照数组，
+    // 于是挖穿地表不会变亮、放下荧石也不会发光 —— 光照永远停在区块初次生成时的样子。
+    // 完整增量 BFS 较复杂，这里退一步：只重算该方块所在的区块
+    // （computeChunkLight 只遍历本区块，不碰整个世界），再让本区块与边界邻居重建网格。
     const cx = Math.floor(x / CHUNK_X), cz = Math.floor(z / CHUNK_Z);
-    if (world && typeof world.markDirty === 'function') {
+    if (!world) return;
+
+    if (typeof world.peek === 'function') {
+      const c = world.peek(cx, cz);
+      if (c) computeChunkLight(c, world);
+    }
+    if (typeof world.markDirty === 'function') {
       world.markDirty(cx, cz);
       for (let dcx = -1; dcx <= 1; dcx++) {
         for (let dcz = -1; dcz <= 1; dcz++) {

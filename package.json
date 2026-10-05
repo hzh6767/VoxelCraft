@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --x64"
+    "dist": "electron-builder --win --x64",
+    "test": "node test/atlas-harness.js && node test/light-harness.js"
   },
   "author": "",
   "license": "MIT",

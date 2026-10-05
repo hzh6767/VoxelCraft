@@ -5,6 +5,7 @@
   'use strict';
 
   let db = null;
+  let dbReady = null;        // Promise<IDBDatabase|null>，IndexedDB 就绪后 resolve
   let inMemory = new Map();  // 降级方案
   let persistent = false;
 
@@ -35,40 +36,53 @@
     });
   }
 
-  openDB().then(d => { db = d; });
+  dbReady = openDB().then(d => { db = d; return d; });
 
-  function saveBlockEdit(cx, cz, lx, y, lz, id) {
-    const key = cx + ',' + cz;
-    if (db) {
-      const tx = db.transaction(['chunks'], 'readwrite');
-      const store = tx.objectStore('chunks');
-      const req = store.get(key);
-      req.onsuccess = () => {
-        const rec = req.result || { key, edits: [] };
-        rec.edits.push([lx, y, lz, id]);
-        store.put(rec);
-      };
-    } else {
+  function writeEditToDb(d, key, lx, y, lz, id) {
+    if (!d) {
       const rec = inMemory.get(key) || [];
       rec.push([lx, y, lz, id]);
       inMemory.set(key, rec);
+      return;
     }
+    const tx = d.transaction(['chunks'], 'readwrite');
+    const store = tx.objectStore('chunks');
+    const req = store.get(key);
+    req.onsuccess = () => {
+      const rec = req.result || { key, edits: [] };
+      rec.edits.push([lx, y, lz, id]);
+      store.put(rec);
+    };
+  }
+
+  function saveBlockEdit(cx, cz, lx, y, lz, id) {
+    const key = cx + ',' + cz;
+    // IndexedDB 打开是异步的。若在它 resolve 之前就把改动写进内存降级表，
+    // 这些改动永远进不了数据库（重启即丢）。所以未就绪时要等 dbReady 再写。
+    if (db) writeEditToDb(db, key, lx, y, lz, id);
+    else if (dbReady) dbReady.then(d => writeEditToDb(d, key, lx, y, lz, id));
+    else writeEditToDb(null, key, lx, y, lz, id);
+  }
+
+  function readEditsFromDb(d, key) {
+    if (!d) return Promise.resolve(inMemory.get(key) || []);
+    return new Promise((resolve) => {
+      const tx = d.transaction(['chunks'], 'readonly');
+      const req = tx.objectStore('chunks').get(key);
+      req.onsuccess = () => {
+        resolve((req.result && req.result.edits) || []);
+      };
+      req.onerror = () => resolve([]);
+    });
   }
 
   function loadEdits(cx, cz) {
     const key = cx + ',' + cz;
-    if (db) {
-      return new Promise((resolve) => {
-        const tx = db.transaction(['chunks'], 'readonly');
-        const req = tx.objectStore('chunks').get(key);
-        req.onsuccess = () => {
-          resolve((req.result && req.result.edits) || []);
-        };
-        req.onerror = () => resolve([]);
-      });
-    } else {
-      return Promise.resolve(inMemory.get(key) || []);
-    }
+    // 同 saveBlockEdit：未就绪时先等 IndexedDB 打开，
+    // 否则会在数据库为空的内存表里读到空，开局附近的存档改动会整片丢失。
+    if (db) return readEditsFromDb(db, key);
+    if (dbReady) return dbReady.then(d => readEditsFromDb(d, key));
+    return readEditsFromDb(null, key);
   }
 
   function savePlayer(state) {
@@ -90,10 +104,13 @@
 
   function clearWorld() {
     inMemory.clear();
-    if (db) {
-      const tx = db.transaction(['chunks'], 'readwrite');
+    const clearDb = (d) => {
+      if (!d) return;
+      const tx = d.transaction(['chunks'], 'readwrite');
       tx.objectStore('chunks').clear();
-    }
+    };
+    if (db) clearDb(db);
+    else if (dbReady) dbReady.then(clearDb);
     try {
       global.localStorage.removeItem('voxelcraft:player');
     } catch (e) {}

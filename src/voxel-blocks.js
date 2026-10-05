@@ -54,8 +54,6 @@
 
   /* Handy shorthands for the six faces. */
   function all(t) { return [t, t, t, t, t, t]; }
-  /* column(t): same tile on all four vertical sides. */
-  function column(t) { return [t, t, t, t, t, t]; }
   /* pillared(side, top): sides = side, +y/-y = top. */
   function pillared(side, top) { return [side, side, top, top, side, side]; }
 
