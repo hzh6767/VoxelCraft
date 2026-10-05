@@ -110,7 +110,10 @@
 
     const lx = x & 15, lz = z & 15;
     const idx = (y * CHUNK_Z + lz) * CHUNK_X + lx;
-    return chunk.skyLight[idx] || 15;
+    // 注意不能用 || 15：天光 0 是合法值（洞穴、屋檐下），
+    // 而 0 是假值，会把"全黑"读成"满天光"，导致洞穴在区块边界出现亮条纹。
+    const v = chunk.skyLight[idx];
+    return v === undefined ? 15 : v;
   }
 
   function getBlockLight(x, y, z) {

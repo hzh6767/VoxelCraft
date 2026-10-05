@@ -45,14 +45,20 @@
         return { x, y, z, nx, ny, nz, block: id };
       }
 
+      // dist 必须取"跨入新格"那一刻的 t（也就是自增之前的 tMax），
+      // 否则取到的是下一道面的距离，循环会在还没采样到合法方块时提前 break，
+      // 表现为挖掘距离随朝向忽长忽短（正对轴最多差 1 格，45° 最多差 1.4 格）。
       if (tMaxX < tMaxY && tMaxX < tMaxZ) {
-        x += stepX; tMaxX += tDeltaX; dist = tMaxX;
+        dist = tMaxX;
+        x += stepX; tMaxX += tDeltaX;
         nx = -stepX; ny = 0; nz = 0;
       } else if (tMaxY < tMaxZ) {
-        y += stepY; tMaxY += tDeltaY; dist = tMaxY;
+        dist = tMaxY;
+        y += stepY; tMaxY += tDeltaY;
         nx = 0; ny = -stepY; nz = 0;
       } else {
-        z += stepZ; tMaxZ += tDeltaZ; dist = tMaxZ;
+        dist = tMaxZ;
+        z += stepZ; tMaxZ += tDeltaZ;
         nx = 0; ny = 0; nz = -stepZ;
       }
     }

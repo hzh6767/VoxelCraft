@@ -71,7 +71,9 @@
         // 跳跃 / 浮力
         if (input.jump) {
           if (this.onGround) this.vel.y = JUMP_VEL;
-          else if (this.inWater) this.vel.y += GRAVITY * dt * 0.4;  // 浮力
+          // 浮力必须严格大于重力，否则按住空格仍然只会一直下沉。
+          // 之前是 0.4×重力，净效果 -0.6×重力，游泳上浮不可能。
+          else if (this.inWater) this.vel.y += GRAVITY * dt * 1.25;
         }
 
         // 水阻
@@ -120,10 +122,9 @@
     }
 
     moveAxis(axis, amount, world) {
-      if (Math.abs(amount) < 0.001) {
-        if (axis === 'y') this.onGround = false;
-        return;
-      }
+      if (axis === 'y') this.onGround = false;
+
+      if (Math.abs(amount) < 0.001) return;
 
       const step = amount > 0 ? 0.05 : -0.05;
       let remaining = amount;
@@ -148,15 +149,17 @@
           }
 
           if (axis === 'y') {
-            if (this.vel.y < 0) this.onGround = true;
+            // 向下被挡住 = 站在地面上。
+            // 这里绝不能在函数末尾再说 "remaining !== 0 就清掉 onGround"：
+            // 碰撞分支是 break 出去的，remaining 必然非零，那样等于永远站不住，
+            // 跳跃和坠落伤害都会失效。
+            if (this.vel.y <= 0) this.onGround = true;
             this.vel.y = 0;
           }
           break;
         }
         remaining -= move;
       }
-
-      if (axis === 'y' && remaining !== 0) this.onGround = false;
     }
 
     collides(world) {

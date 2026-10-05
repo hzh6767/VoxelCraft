@@ -112,10 +112,9 @@
     }
 
     moveAxis(axis, amount, world) {
-      if (Math.abs(amount) < 0.001) {
-        if (axis === 'y') this.onGround = false;
-        return;
-      }
+      if (axis === 'y') this.onGround = false;
+
+      if (Math.abs(amount) < 0.001) return;
 
       const step = amount > 0 ? 0.05 : -0.05;
       let remaining = amount;
@@ -127,15 +126,15 @@
         if (this.collides(world)) {
           this.pos[axis] -= move;
           if (axis === 'y') {
-            if (this.vel.y < 0) this.onGround = true;
+            // 同 voxel-player.js 的修正：先清零、只在向下被挡住时置真，
+            // 不能再用 "remaining !== 0 就清掉"（碰撞分支必然 break，remaining 恒非零）。
+            if (this.vel.y <= 0) this.onGround = true;
             this.vel.y = 0;
           }
           break;
         }
         remaining -= move;
       }
-
-      if (axis === 'y' && remaining !== 0) this.onGround = false;
     }
 
     collides(world) {

@@ -326,6 +326,30 @@
           c.set(lx, y, lz, id);
         }
       }
+
+      // 从磁盘读回上次会话的改动。
+      // 之前 saveBlockEdit 是只写不读：改动进了 IndexedDB 却从没被加载回来，
+      // 重启后世界重新生成、玩家的建筑全丢，而出生点又按存档恢复，
+      // 结果可能卡在原本是建筑的地方。
+      if (typeof SAVE.loadEdits === 'function') {
+        try {
+          Promise.resolve(SAVE.loadEdits(cx, cz)).then(edits => {
+            if (!edits || !edits.length) return;
+            let stored = this.overrides.get(k);
+            if (!stored) { stored = new Map(); this.overrides.set(k, stored); }
+            for (const t of edits) {
+              const tlx = t[0], ty = t[1], tlz = t[2], tid = t[3];
+              stored.set(tlx + ',' + ty + ',' + tlz, tid);
+              c.set(tlx, ty, tlz, tid);
+            }
+            // 改动可能影响光照和网格，重算后重建
+            if (typeof LIGHT.computeChunkLight === 'function') {
+              try { LIGHT.computeChunkLight(c, this); } catch (e) {}
+            }
+            c.dirty = true;
+          }).catch(() => {});
+        } catch (e) { /* 读档失败不该阻断生成 */ }
+      }
       // 光照
       if (typeof LIGHT.computeChunkLight === 'function') {
         try { LIGHT.computeChunkLight(c, this); } catch (e) { console.warn('[engine] 光照计算失败', e); }
@@ -401,8 +425,14 @@
     isLoaded(cx, cz) { return this.chunks.has(chunkKey(cx, cz)); },
   };
 
-  // 光照模块需要反查世界
+  // 光照模块需要反查世界。
+  // VoxelLight 内部用的是模块私有的 world 变量，只有 _setWorld 能设置它；
+  // 只挂 __voxelWorld 是没用的（该模块从不读这个全局），会导致 getSky 永远返回 15、
+  // getBlockLight 永远返回 0 —— 跨区块的洞穴墙面会整片发亮。
   global.__voxelWorld = world;
+  if (typeof LIGHT._setWorld === 'function') {
+    try { LIGHT._setWorld(world); } catch (e) { console.warn('[engine] 光照世界绑定失败', e); }
+  }
 
   /* ============================================================
    * 4. 区块网格
