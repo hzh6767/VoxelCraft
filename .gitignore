@@ -9,3 +9,12 @@ dist/
 .capture.png
 .render.png
 .shot.html
+
+# 本地调试残留（不入库）
+.design.md
+.render-check.js
+.render-check.png
+.verify.js
+.verify-atlas.js
+.verify.png
+.verify_out.txt
