@@ -65,6 +65,11 @@
   renderer.setSize(innerWidth, innerHeight);
   document.getElementById('game').appendChild(renderer.domElement);
 
+  // 阴影贴图：PCF 软阴影（类型值见 three.min.js，PCFSoftShadowMap = 2）。
+  // 方向光的正交阴影相机在下面配置，并每帧跟随玩家（见 updateSky）。
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
   /* ---- Bloom 后处理（电影级光晕）----
    * three.js r149 的 min 构建里没有 EffectComposer/RenderPass/UnrealBloomPass，
    * 所以这里用 ShaderMaterial + WebGLRenderTarget 自己搭一条最小管线：
@@ -228,10 +233,16 @@
   let atlasTexture = null;
   if (atlas && atlas.canvas) {
     atlasTexture = new THREE.CanvasTexture(atlas.canvas);
+    // 近距保持像素硬边（Nearest），远距用 mipmap 链消除闪烁。
+    // 图集每格四周补了 8 像素边缘复制（见 textures.js），所以 mipmap 各层
+    // 不会渗进邻格；三线性过滤在 mip 层之间过渡，各向异性过滤修正斜视角。
     atlasTexture.magFilter = THREE.NearestFilter;
-    atlasTexture.minFilter = THREE.NearestFilter;
-    atlasTexture.generateMipmaps = false;
+    atlasTexture.minFilter = THREE.LinearMipMapLinearFilter;
+    atlasTexture.generateMipmaps = true;
     atlasTexture.flipY = false;
+    atlasTexture.anisotropy = (renderer.capabilities && renderer.capabilities.getMaxAnisotropy)
+      ? renderer.capabilities.getMaxAnisotropy() : 1;
+    atlasTexture.needsUpdate = true;
     // mesher 通过这个全局取每张贴图的 UV 范围。没有它 mesher 会退回
     // “整张图集”的 UV，导致每个方块面都贴上全部 42 张贴图。
     global.__voxelAtlas = atlas;
@@ -240,21 +251,22 @@
   }
 
   /* ---- 材质 ----
-   * 用 MeshBasicMaterial 而不是 Lambert：mesher 只输出 position/uv/color/index，
-   * 没有法线属性。Lambert 需要 normal 参与光照，缺失时法线为 0、光照贡献接近 0，
-   * 整个地形会渲染成接近纯黑。方向明暗、AO、天光已经在顶点色里烘焙好了，
-   * 所以这里只需要 Basic + fog 就够，昼夜由 material.color 统一调制。 */
-  const matOpaque = new THREE.MeshBasicMaterial({
+   * 用 MeshLambertMaterial：mesher 现在为三条流（不透明/水/十字）都输出 normal 属性
+   * （见 voxel-chunk.js buildMesh 的 toGeo）。方向明暗、AO、天光已烘焙进顶点色，
+   * 真实方向光只需接手 N·L —— 这两半必须成对：Basic 会让法线不参与光照，
+   * Lambert 缺法线则整片地形发黑。昼夜由 sun/hemi 的强度与颜色驱动（见 updateSky），
+   * 材质色保持白色，不再二次调制，避免把方向/昼夜项乘两遍。 */
+  const matOpaque = new THREE.MeshLambertMaterial({
     map: atlasTexture, vertexColors: true, fog: true,
     // 图集里树叶的孔洞、植物镂空的像素是 alpha=0 的黑色。
     // 不做 alphaTest 的话这些像素会被画成黑块，树叶上就全是黑洞。
     alphaTest: 0.5,
   });
-  const matWater = new THREE.MeshBasicMaterial({
+  const matWater = new THREE.MeshLambertMaterial({
     map: atlasTexture, vertexColors: true, fog: true,
     transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide,
   });
-  const matCross = new THREE.MeshBasicMaterial({
+  const matCross = new THREE.MeshLambertMaterial({
     map: atlasTexture, vertexColors: true, fog: true,
     transparent: true, alphaTest: 0.5, side: THREE.DoubleSide,
   });
@@ -264,6 +276,27 @@
   const sun = new THREE.DirectionalLight(0xffffff, 1.0);
   sun.position.set(0.6, 1, 0.35).multiplyScalar(100);
   scene.add(sun);
+
+  // 太阳阴影：正交阴影相机范围有限（约 70 单位），用分辨率换清晰度；
+  // 相机每帧随玩家平移（见 updateSky），水平吸附到整格以免边缘抖动。
+  const SHADOW_EXTENT = 70;
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -SHADOW_EXTENT;
+  sun.shadow.camera.right = SHADOW_EXTENT;
+  sun.shadow.camera.top = SHADOW_EXTENT;
+  sun.shadow.camera.bottom = -SHADOW_EXTENT;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 320;
+  sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0.04;
+  sun.shadow.camera.updateProjectionMatrix();
+  // 方向光带一个必须加入场景图的 target：不加的话 target 恒在原点，
+  // 玩家走远后光源方向会被拉斜，阴影随之错位。
+  const sunTarget = new THREE.Object3D();
+  scene.add(sunTarget);
+  sun.target = sunTarget;
+
   // 半球光补暗部，避免背光面死黑
   const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x6b5a44, 0.45);
   scene.add(hemi);
@@ -473,6 +506,10 @@
       if (g) {
         const m = new THREE.Mesh(g, mat);
         m.frustumCulled = true;
+        // 不透明地形既投影也接收阴影；水/十字植物只接收
+        // （半透明几何投影会留下硬边黑块）
+        m.castShadow = (prop === 'mesh');
+        m.receiveShadow = true;
         c[prop] = m;
         meshRoot.add(m);
       }
@@ -567,6 +604,58 @@
   const debugEl = document.getElementById('debug');
   const crackEl = document.getElementById('crack');
 
+  /* ---- 设置：鼠标灵敏度 / FOV，存 localStorage ---- */
+  const SETTINGS_KEY = 'voxelcraft:settings';
+  const settings = Object.assign(
+    { sens: 30, fov: 75 },
+    (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (e) { return {}; } })()
+  );
+  // 滑块 1..100 映射到弧度/像素。默认 30 对应 0.0012，
+  // 比之前写死的 0.0022 低近一半 —— 那个值手感过快。
+  function sensMultiplier() { return settings.sens * 0.00004; }
+
+  function applyFov() {
+    camera.fov = settings.fov;
+    camera.updateProjectionMatrix();
+  }
+
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+  }
+
+  (function initSettingsUI() {
+    const sensEl = document.getElementById('set-sens');
+    const sensVal = document.getElementById('set-sens-val');
+    const fovEl = document.getElementById('set-fov');
+    const fovVal = document.getElementById('set-fov-val');
+    const panel = document.getElementById('settings');
+    // 整个面板都不能冒泡到 overlay，否则拖滑块一松手就锁定鼠标进游戏
+    if (panel) {
+      panel.addEventListener('mousedown', e => e.stopPropagation());
+      panel.addEventListener('click', e => e.stopPropagation());
+    }
+    if (sensEl) {
+      sensEl.value = settings.sens;
+      sensVal.textContent = settings.sens;
+      sensEl.addEventListener('input', () => {
+        settings.sens = +sensEl.value;
+        sensVal.textContent = settings.sens;
+        saveSettings();
+      });
+    }
+    if (fovEl) {
+      fovEl.value = settings.fov;
+      fovVal.textContent = settings.fov;
+      fovEl.addEventListener('input', () => {
+        settings.fov = +fovEl.value;
+        fovVal.textContent = settings.fov;
+        applyFov();
+        saveSettings();
+      });
+    }
+    applyFov();
+  })();
+
   const canvas = renderer.domElement;
   canvas.addEventListener('click', () => {
     if (!locked) canvas.requestPointerLock();
@@ -584,8 +673,9 @@
 
   document.addEventListener('mousemove', e => {
     if (!locked) return;
-    player.yaw -= e.movementX * 0.0022;
-    player.pitch -= e.movementY * 0.0022;
+    const s = sensMultiplier();
+    player.yaw -= e.movementX * s;
+    player.pitch -= e.movementY * s;
     const lim = Math.PI / 2 - 0.001;
     player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
   });
@@ -812,20 +902,31 @@
     const elev = Math.sin(ang);
     const keys = sampleTimeKeys(timeOfDay);
 
-    // 太阳沿天球运动，日落后压在地平线下但保留一点环境光
-    sun.position.set(Math.cos(ang) * 100, Math.max(-20, elev * 100), 40);
+    // 太阳沿天球运动，日落后压在地平线下但保留一点环境光。
+    // 光源与阴影相机跟随玩家：水平位置吸附到整格，避免阴影边缘随移动抖动。
+    const bx = Math.round(player.pos.x);
+    const by = Math.round(player.pos.y);
+    const bz = Math.round(player.pos.z);
+    sunTarget.position.set(bx, by, bz);
+    sun.position.set(
+      bx + Math.cos(ang) * 100,
+      by + Math.max(-20, elev * 100),
+      bz + 40
+    );
     sun.color.copy(keys.sun);
+
+    // 强度选择：顶点色里已烘进天光/AO/方向明暗，满露天顶面 = 0.80×贴图。
+    // 改 Lambert 前是 Basic：顶面最终 = 顶点色 0.80 × 材质色(正午≈ 1.0)。
+    // 现在顶面最终 = 0.80 × (sunColor×sunI×N·L + skyColor×hemiI)，
+    // 要让括号里的辐照度和在满光时 ≈ 1.0，顶面才与旧观感相当（legacy 光照下
+    // 净贡献 = 颜色 × 强度）。几何正午（t=0.5，太阳在头顶）N·L=1，太阳项≈ keys.intensity≈0.9，
+    // 所以半球只需补 ≈0.1-0.3：hemiI = 0.20 + 0.20×intensity。
+    // 夜晚太阳落到地平线下、顶面 N·L≈0，由 hemi 的 0.20 地板提供环境光，不会死黑。
     sun.intensity = keys.intensity;
-    hemi.intensity = 0.10 + keys.intensity * 0.40;
+    hemi.intensity = 0.20 + keys.intensity * 0.20;
 
     scene.background.copy(keys.sky);
     if (scene.fog) scene.fog.color.copy(keys.fog);
-
-    // 顶点色里的天光在网格构建时烘焙好了，昼夜变化靠材质色统一调制：
-    // 用日光色乘上强度，夜晚整个世界随之变暗偏蓝。
-    for (const m of WORLD_MATS) {
-      m.color.copy(keys.sun).multiplyScalar(0.35 + keys.intensity * 0.65);
-    }
 
     // 亮度系数：供后期曝光使用
     global.__daylight = Math.max(0, Math.min(1, (elev + 0.18) / 0.55));

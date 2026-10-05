@@ -80,12 +80,15 @@
    * shade = 方向明暗（顶面最亮，底面最暗），模拟天光方向。
    * ============================================================ */
   const FACES = [
-    { dir: [ 1, 0, 0], corners: [[1,0,1],[1,0,0],[1,1,0],[1,1,1]], shade: 0.72, uAxis: 2, vAxis: 1, uDir: -1, vDir: 1 },
-    { dir: [-1, 0, 0], corners: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]], shade: 0.72, uAxis: 2, vAxis: 1, uDir: 1,  vDir: 1 },
-    { dir: [ 0, 1, 0], corners: [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], shade: 1.00, uAxis: 0, vAxis: 2, uDir: 1,  vDir: -1 },
-    { dir: [ 0,-1, 0], corners: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], shade: 0.48, uAxis: 0, vAxis: 2, uDir: 1,  vDir: 1 },
-    { dir: [ 0, 0, 1], corners: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], shade: 0.86, uAxis: 0, vAxis: 1, uDir: 1,  vDir: 1 },
-    { dir: [ 0, 0,-1], corners: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], shade: 0.86, uAxis: 0, vAxis: 1, uDir: -1, vDir: 1 },
+    // shade 已压缩到 [0.75 .. 1.00]：真实方向光接手 N·L 后，
+    // 这里只保留一点残余的朝向差，让纯环境光区域（洞穴、夜晚）仍有立体感，
+    // 又不会在受光面/背光面上把方向对比乘两次。
+    { dir: [ 1, 0, 0], corners: [[1,0,1],[1,0,0],[1,1,0],[1,1,1]], shade: 0.865, uAxis: 2, vAxis: 1, uDir: -1, vDir: 1 },
+    { dir: [-1, 0, 0], corners: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]], shade: 0.865, uAxis: 2, vAxis: 1, uDir: 1,  vDir: 1 },
+    { dir: [ 0, 1, 0], corners: [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], shade: 1.000, uAxis: 0, vAxis: 2, uDir: 1,  vDir: -1 },
+    { dir: [ 0,-1, 0], corners: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], shade: 0.750, uAxis: 0, vAxis: 2, uDir: 1,  vDir: 1 },
+    { dir: [ 0, 0, 1], corners: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], shade: 0.933, uAxis: 0, vAxis: 1, uDir: 1,  vDir: 1 },
+    { dir: [ 0, 0,-1], corners: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], shade: 0.933, uAxis: 0, vAxis: 1, uDir: -1, vDir: 1 },
   ];
 
   /* AO 亮度档位：0=最暗（三面被挡），3=无遮挡。
@@ -104,14 +107,23 @@
   // 把整数 AO 值 (0..3) 映射到细档位
   const aoIndex = v => (v <= 0 ? 0 : v >= 3 ? 15 : (v * 5));
 
+  /* 方块世界坐标 -> 稳定的 hash。用它给同一张贴图挑选变体：
+   * 同一个方块六个面拿到同一个变体，整片地形则各不相同。 */
+  function blockHash(x, y, z) {
+    let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(z | 0, 2246822519);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h = h ^ (h >>> 16);
+    return h >>> 0;
+  }
+
   /* ============================================================
    * 网格构建
    * ============================================================ */
   function buildMesh(chunk, world) {
     // 三个输出流：不透明、水（单独材质以便动画/排序）、十字植物
-    const op = { pos: [], uv: [], col: [], idx: [] };
-    const tr = { pos: [], uv: [], col: [], idx: [] };
-    const cr = { pos: [], uv: [], col: [], idx: [] };
+    const op = { pos: [], uv: [], col: [], nrm: [], idx: [] };
+    const tr = { pos: [], uv: [], col: [], nrm: [], idx: [] };
+    const cr = { pos: [], uv: [], col: [], nrm: [], idx: [] };
 
     const ox = chunk.cx * CHUNK_X;
     const oz = chunk.cz * CHUNK_Z;
@@ -149,7 +161,13 @@
     }
 
     const atlas = global.__voxelAtlas;
-    function uvRect(tileName) {
+    // variantHash：方块坐标 hash。优先取该贴图的第 (hash % 变体数) 个变体；
+    // 图集没有变体 API（或该贴图只有 1 个变体）时退回主变体。
+    function uvRect(tileName, variantHash) {
+      if (atlas && typeof atlas.uvOfVariant === 'function') {
+        const r = atlas.uvOfVariant(tileName, variantHash || 0);
+        if (r) return r;
+      }
       if (atlas && typeof atlas.uvOf === 'function') {
         const r = atlas.uvOf(tileName);
         if (r) return r;
@@ -180,15 +198,22 @@
               for (const pair of quads) {
                 const p0 = pair[0], p1 = pair[1];
                 const base = cr.pos.length / 3;
+                // 每片对角面有自己的水平法线：把面内的对角方向绕 Y 轴转 90°，
+                // 于是两片交叉面朝向互相垂直，Lambert 下才能分辨出两个朝向。
+                const dxq = p1[0] - p0[0], dzq = p1[2] - p0[2];
+                let nxq = dzq, nzq = -dxq;
+                const nlen = Math.hypot(nxq, nzq) || 1;
+                nxq /= nlen; nzq /= nlen;
                 const pts = [
                   [p0[0], 0, p0[2]], [p1[0], 0, p1[2]], [p1[0], 1, p1[2]], [p0[0], 1, p0[2]],
                 ];
-                const rect = uvRect(tileName);
+                const rect = uvRect(tileName, blockHash(wx, y, wz));
                 const uvs = [[rect.u0, rect.v1], [rect.u1, rect.v1], [rect.u1, rect.v0], [rect.u0, rect.v0]];
                 for (let k = 0; k < 4; k++) {
                   cr.pos.push(wx + pts[k][0], y + pts[k][1], wz + pts[k][2]);
                   cr.uv.push(uvs[k][0], uvs[k][1]);
                   cr.col.push(bright, bright, bright);
+                  cr.nrm.push(nxq, 0, nzq);
                 }
                 cr.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
               }
@@ -211,7 +236,7 @@
             if (isWater && BLK.isOpaque(nb)) continue;
 
             const target = isWater ? tr : op;
-            const rect = uvRect((def && def.tiles && def.tiles[f]) || 'stone');
+            const rect = uvRect((def && def.tiles && def.tiles[f]) || 'stone', blockHash(wx, y, wz));
 
             // 依据面法线所在轴，取另外两轴作为切向
             const axis = F.dir[0] !== 0 ? 0 : (F.dir[1] !== 0 ? 1 : 2);
@@ -256,6 +281,7 @@
               target.uv.push(uvs[k][0], uvs[k][1]);
               const b = shade * lightMul * AO_LEVELS[aoIndex(aoVals[k])];
               target.col.push(b, b, b);
+              target.nrm.push(F.dir[0], F.dir[1], F.dir[2]);
             }
 
             // 四顶点翻转：AO 各向异性时改对角线走向，消除可见接缝
@@ -281,6 +307,7 @@
       g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
       g.setAttribute('uv', new THREE.Float32BufferAttribute(d.uv, 2));
       g.setAttribute('color', new THREE.Float32BufferAttribute(d.col, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(d.nrm, 3));
       g.setIndex(d.idx);
       g.computeBoundingSphere();
       return g;

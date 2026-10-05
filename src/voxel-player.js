@@ -27,7 +27,10 @@
       this.HEIGHT = 1.8;
       this.EYE = 1.62;
 
-      this.fallApex = this.pos.y;
+      // null = "还没记录本段坠落的起点"。绝不能预设成出生高度：
+      // engine 构造完玩家后会把 pos 挪到地表（约 60 格），而 70 这个陈旧值
+      // 会让玩家开局第一次落地就被判成从 70 格摔下，白掉 7 点血。
+      this.fallApex = null;
     }
 
     update(dt, input, world) {
@@ -97,17 +100,27 @@
       this.vel.x = mx;
       this.vel.z = mz;
 
-      // 分轴碰撞
+      // 分轴碰撞。每帧重置台阶标记：x 和 z 走同一条 moveAxis，
+      // 不限制的话一次移动能借两轴上 2 格。
+      this._steppedThisFrame = false;
       this.moveAxis('y', this.vel.y * dt, world);
       this.moveAxis('x', this.vel.x * dt, world);
       this.moveAxis('z', this.vel.z * dt, world);
 
       // 掉落伤害
       if (!this.flying && !this.inWater) {
+        if (this.fallApex === null) this.fallApex = this.pos.y;
         if (this.vel.y > 0) this.fallApex = Math.max(this.fallApex, this.pos.y);
-        if (this.onGround && this.fallApex - this.pos.y > 3) {
-          const damage = Math.floor(this.fallApex - this.pos.y - 3);
-          this.health -= damage;
+        if (this.onGround) {
+          // 站定 = 这一段落到底，先结算伤害，再把顶点无条件同步到脚下。
+          // 原来只在"确实要扣血"的分支里同步，于是顶点会一直停在历史最高点：
+          // 出生时构造函数把它设成 70，而实际出生高度是地表（约 60），
+          // 玩家一落地就被判定"从 70 格摔下来"，凭空掉 7 点血；
+          // 从高处落地后走平地也会持续掉血。这是必须无条件重置的原因。
+          if (this.fallApex - this.pos.y > 3) {
+            const damage = Math.floor(this.fallApex - this.pos.y - 3);
+            this.health -= damage;
+          }
           this.fallApex = this.pos.y;
         }
       } else {
@@ -122,9 +135,11 @@
     }
 
     moveAxis(axis, amount, world) {
-      if (axis === 'y') this.onGround = false;
-
+      // 早退必须在清 onGround 之前：站着不动时每帧重力位移是 32*dt*dt，
+      // 在 >179Hz 的显示器上会小于 0.001 而直接从这一行返回，
+      // 若先清了 onGround 就再也置不回来 —— 高刷屏上完全无法起跳。
       if (Math.abs(amount) < 0.001) return;
+      if (axis === 'y') this.onGround = false;
 
       const step = amount > 0 ? 0.05 : -0.05;
       let remaining = amount;
@@ -136,14 +151,26 @@
         if (this.collides(world)) {
           this.pos[axis] -= move;
 
-          // Step-up: 尝试台阶上移
-          if (axis !== 'y' && !this.flying) {
+          // 自动上台阶。四个条件缺一不可：
+          //   1. 横向移动、人确实站在实地上 —— 少了这条，坠落时每帧都会往上蹭一格，
+          //      贴着墙往下掉反而会爬到墙顶，表现为"瞬移上去很多格"。
+          //   2. 每帧只上 1 次（_steppedThisFrame），否则 x 和 z 两轴会各上 1 格。
+          //   3. 抬升高度固定为脚下格的顶面 + 1，也就是只上得去 1 格。
+          //   4. 抬升之后必须真的能往前挪出去 —— 这条最关键：少了它，
+          //      人物贴在任何高度的墙面上都会逐帧各升 1 格（60 格/秒），
+          //      看起来就是瞬移爬到墙顶。有了它，2 格及更高的墙在抬升后依然撞墙，
+          //      整个上台阶动作被否决；只有真正的 1 格台阶能过。
+          if (axis !== 'y' && !this.flying && this.onGround && !this._steppedThisFrame) {
             const oldY = this.pos.y;
-            this.pos.y += 1.0;
+            this.pos.y = Math.floor(this.pos.y + 1e-3) + 1;
             if (!this.collides(world)) {
-              // 成功踩上
-              remaining = 0;
-              break;
+              this.pos[axis] += move;                  // 补上刚被回退的横向位移
+              if (!this.collides(world)) {
+                this._steppedThisFrame = true;
+                remaining -= move;                     // 正常消耗掉这一步，继续往前走
+                continue;
+              }
+              this.pos[axis] -= move;
             }
             this.pos.y = oldY;
           }
