@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The test harnesses are plain Node scripts; electron is only needed to
+      # actually run the game, so the suite runs without installing anything.
+      - name: Run test harnesses
+        run: npm test
