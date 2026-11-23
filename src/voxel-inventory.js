@@ -105,7 +105,7 @@
         }
         let match = true;
         for (const id in needed) {
-          if ((have[id] || 0) < needed[id]) { match = false; break; }
+          if (have[id] !== needed[id]) { match = false; break; }
         }
         for (const id in have) {
           if (!needed[id]) { match = false; break; }

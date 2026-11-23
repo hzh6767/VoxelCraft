@@ -668,7 +668,11 @@
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     overlay.classList.toggle('hide', locked);
-    if (!locked) { mining = false; placing = false; }
+    if (!locked) {
+      for (const key of Object.keys(input)) input[key] = false;
+      mining = false;
+      placing = false;
+    }
   });
 
   document.addEventListener('mousemove', e => {
@@ -683,6 +687,7 @@
   document.addEventListener('contextmenu', e => e.preventDefault());
 
   addEventListener('keydown', e => {
+    if (!locked) return;
     switch (e.code) {
       case 'KeyW': case 'ArrowUp': input.forward = 1; break;
       case 'KeyS': case 'ArrowDown': input.back = 1; break;
@@ -690,7 +695,7 @@
       case 'KeyD': case 'ArrowRight': input.right = 1; break;
       case 'Space': input.jump = true; e.preventDefault(); break;
       case 'ShiftLeft': case 'ShiftRight': input.sprint = true; input.sneak = true; break;
-      case 'KeyF': player.flying = !player.flying; break;
+      case 'KeyF': if (!e.repeat) player.flying = !player.flying; break;
       case 'KeyE': toggleInventory(); break;
     }
     if (e.code.startsWith('Digit')) {
@@ -1009,7 +1014,7 @@
     frame++;
 
     // 输入 → 物理
-    updatePlayer(dt);
+    if (locked) updatePlayer(dt);
 
     // 掉出世界兜底
     if (player.pos.y < -10) {
@@ -1028,7 +1033,7 @@
     if (++unloadTimer % 90 === 0) unloadFarChunks();
 
     // 昼夜
-    timeOfDay = (timeOfDay + dt / DAY_LENGTH) % 1;
+    if (locked) timeOfDay = (timeOfDay + dt / DAY_LENGTH) % 1;
     updateSky();
 
     // 挖掘 / 放置
@@ -1078,7 +1083,7 @@
     }
 
     // 生物
-    if (mobManager && typeof mobManager.update === 'function') {
+    if (locked && mobManager && typeof mobManager.update === 'function') {
       try {
         mobManager.update(dt, world, player);
         if (typeof mobManager.spawn === 'function' && frame % 120 === 0) {
