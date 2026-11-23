@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win --x64",
-    "test": "node test/atlas-harness.js && node test/light-harness.js"
+    "test": "node test/atlas-harness.js && node test/light-harness.js && node test/crafting-harness.js"
   },
   "author": "",
   "license": "MIT",
